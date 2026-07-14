@@ -82,11 +82,25 @@ router.get('/:id/audio', async (req, res) => {
     if (msg.audio_url) {
       const sid = process.env.TWILIO_ACCOUNT_SID;
       const token = process.env.TWILIO_AUTH_TOKEN;
+
+      if (!sid || !token) {
+        console.error('Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN environment variable');
+        return res.status(500).json({ error: 'Server is missing Twilio credentials' });
+      }
+
       const auth = Buffer.from(`${sid}:${token}`).toString('base64');
       const twilioRes = await fetch(msg.audio_url, {
         headers: { Authorization: `Basic ${auth}` },
       });
-      if (!twilioRes.ok) return res.status(502).json({ error: 'Could not fetch recording from Twilio' });
+      if (!twilioRes.ok) {
+        const body = await twilioRes.text().catch(() => '');
+        console.error(`Twilio recording fetch failed: ${twilioRes.status} ${twilioRes.statusText} — ${body}`);
+        return res.status(502).json({
+          error: 'Could not fetch recording from Twilio',
+          twilioStatus: twilioRes.status,
+          twilioBody: body.slice(0, 300),
+        });
+      }
       res.set('Content-Type', twilioRes.headers.get('content-type') || 'audio/mpeg');
       const buffer = Buffer.from(await twilioRes.arrayBuffer());
       return res.send(buffer);
