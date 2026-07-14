@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool');
+const { requireAuth } = require('./auth');
+
+router.use(requireAuth);
 
 // GET all contacts, with their group memberships
 router.get('/', async (req, res) => {
@@ -26,14 +29,14 @@ router.get('/', async (req, res) => {
 
 // POST create a new contact
 router.post('/', async (req, res) => {
-  const { name, phone_number, preferred_method, notes, group_ids } = req.body;
+  const { name, phone_number, email, address, preferred_method, notes, group_ids } = req.body;
   if (!phone_number) return res.status(400).json({ error: 'phone_number is required' });
 
   try {
     const { rows } = await pool.query(
-      `INSERT INTO contacts (name, phone_number, preferred_method, notes)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [name || null, phone_number, preferred_method || 'sms', notes || null]
+      `INSERT INTO contacts (name, phone_number, email, address, preferred_method, notes)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [name || null, phone_number, email || null, address || null, preferred_method || 'sms', notes || null]
     );
     const contact = rows[0];
 
@@ -52,20 +55,67 @@ router.post('/', async (req, res) => {
   }
 });
 
+// POST bulk-import contacts (used by the Excel upload feature)
+// Expects: { contacts: [{ name, phone_number, email, address, preferred_method, notes }, ...] }
+router.post('/bulk', async (req, res) => {
+  const { contacts } = req.body;
+  if (!Array.isArray(contacts) || !contacts.length) {
+    return res.status(400).json({ error: 'contacts array is required' });
+  }
+
+  const results = { created: 0, skipped: 0, errors: [] };
+
+  for (const c of contacts) {
+    const phone = (c.phone_number || '').toString().trim();
+    if (!phone) {
+      results.skipped++;
+      results.errors.push({ row: c, reason: 'Missing phone number' });
+      continue;
+    }
+    try {
+      await pool.query(
+        `INSERT INTO contacts (name, phone_number, email, address, preferred_method, notes)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (phone_number) DO UPDATE SET
+           name = COALESCE(EXCLUDED.name, contacts.name),
+           email = COALESCE(EXCLUDED.email, contacts.email),
+           address = COALESCE(EXCLUDED.address, contacts.address),
+           notes = COALESCE(EXCLUDED.notes, contacts.notes)`,
+        [
+          c.name || null,
+          phone,
+          c.email || null,
+          c.address || null,
+          c.preferred_method || 'sms',
+          c.notes || null,
+        ]
+      );
+      results.created++;
+    } catch (err) {
+      results.skipped++;
+      results.errors.push({ row: c, reason: err.message });
+    }
+  }
+
+  res.json(results);
+});
+
 // PUT update a contact
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, phone_number, preferred_method, notes, group_ids } = req.body;
+  const { name, phone_number, email, address, preferred_method, notes, group_ids } = req.body;
 
   try {
     const { rows } = await pool.query(
       `UPDATE contacts SET
          name = COALESCE($1, name),
          phone_number = COALESCE($2, phone_number),
-         preferred_method = COALESCE($3, preferred_method),
-         notes = COALESCE($4, notes)
-       WHERE id = $5 RETURNING *`,
-      [name, phone_number, preferred_method, notes, id]
+         email = $3,
+         address = $4,
+         preferred_method = COALESCE($5, preferred_method),
+         notes = $6
+       WHERE id = $7 RETURNING *`,
+      [name, phone_number, email || null, address || null, preferred_method, notes || null, id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Contact not found' });
 
