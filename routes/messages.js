@@ -62,6 +62,49 @@ router.post('/upload', requireAuth, upload.single('audio'), async (req, res) => 
   }
 });
 
+// PUT rename a message (or update its text content)
+router.put('/:id', requireAuth, async (req, res) => {
+  const { title, text_content } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE messages SET
+         title = COALESCE($1, title),
+         text_content = COALESCE($2, text_content)
+       WHERE id = $3
+       RETURNING id, title, type, text_content, audio_url, created_at`,
+      [title, text_content, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Message not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update message' });
+  }
+});
+
+// PUT replace a message's audio (used for saving a trimmed/cropped version).
+// Always stores directly in the database going forward, even if the original
+// came from a phone recording — this way the trimmed clip is what plays back.
+router.put('/:id/audio', requireAuth, upload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No audio file was uploaded' });
+  try {
+    const { rows } = await pool.query(
+      `UPDATE messages SET
+         audio_data = $1,
+         audio_mime_type = $2,
+         audio_url = NULL
+       WHERE id = $3
+       RETURNING id, title, type, text_content, audio_url, created_at`,
+      [req.file.buffer, req.file.mimetype, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Message not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to save trimmed audio' });
+  }
+});
+
 // GET the actual playable audio for a message — handles both:
 //  - uploaded files (served directly from the database)
 //  - phone recordings (proxied from Twilio, which requires authenticated access)
@@ -82,7 +125,6 @@ router.get('/:id/audio', async (req, res) => {
     if (msg.audio_url) {
       const sid = (process.env.TWILIO_ACCOUNT_SID || '').trim();
       const token = (process.env.TWILIO_AUTH_TOKEN || '').trim();
-      console.log(`Twilio creds check — sid length: ${sid.length}, token length: ${token.length}`);
 
       if (!sid || !token) {
         console.error('Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN environment variable');
