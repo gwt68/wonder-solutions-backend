@@ -3,6 +3,10 @@ const express = require('express');
 const cors = require('cors');
 
 const voiceRoutes = require('./routes/voice');
+const contactsRoutes = require('./routes/contacts');
+const groupsRoutes = require('./routes/groups');
+const messagesRoutes = require('./routes/messages');
+const settingsRoutes = require('./routes/settings');
 
 const app = express();
 app.use(cors());
@@ -10,6 +14,10 @@ app.use(express.urlencoded({ extended: false })); // Twilio posts form-encoded d
 app.use(express.json());
 
 app.use('/voice', voiceRoutes);
+app.use('/api/contacts', contactsRoutes);
+app.use('/api/groups', groupsRoutes);
+app.use('/api/messages', messagesRoutes);
+app.use('/api/settings', settingsRoutes);
 
 app.get('/', (req, res) => res.send('Wonder Solutions backend is running.'));
 
