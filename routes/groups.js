@@ -90,8 +90,8 @@ router.get('/:id/audio-label', async (req, res) => {
     const { rows } = await pool.query('SELECT audio_label_url FROM groups WHERE id = $1', [req.params.id]);
     if (!rows.length || !rows[0].audio_label_url) return res.status(404).end();
 
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
+    const sid = (process.env.TWILIO_ACCOUNT_SID || '').trim();
+    const token = (process.env.TWILIO_AUTH_TOKEN || '').trim();
     const auth = Buffer.from(`${sid}:${token}`).toString('base64');
     const twilioRes = await fetch(rows[0].audio_label_url, {
       headers: { Authorization: `Basic ${auth}` },

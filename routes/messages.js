@@ -80,8 +80,9 @@ router.get('/:id/audio', async (req, res) => {
     }
 
     if (msg.audio_url) {
-      const sid = process.env.TWILIO_ACCOUNT_SID;
-      const token = process.env.TWILIO_AUTH_TOKEN;
+      const sid = (process.env.TWILIO_ACCOUNT_SID || '').trim();
+      const token = (process.env.TWILIO_AUTH_TOKEN || '').trim();
+      console.log(`Twilio creds check — sid length: ${sid.length}, token length: ${token.length}`);
 
       if (!sid || !token) {
         console.error('Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN environment variable');
