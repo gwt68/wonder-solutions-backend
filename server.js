@@ -7,6 +7,7 @@ const contactsRoutes = require('./routes/contacts');
 const groupsRoutes = require('./routes/groups');
 const messagesRoutes = require('./routes/messages');
 const settingsRoutes = require('./routes/settings');
+const { router: authRoutes } = require('./routes/auth');
 
 const app = express();
 app.use(cors());
@@ -14,6 +15,7 @@ app.use(express.urlencoded({ extended: false })); // Twilio posts form-encoded d
 app.use(express.json());
 
 app.use('/voice', voiceRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/contacts', contactsRoutes);
 app.use('/api/groups', groupsRoutes);
 app.use('/api/messages', messagesRoutes);
