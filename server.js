@@ -8,6 +8,7 @@ const groupsRoutes = require('./routes/groups');
 const messagesRoutes = require('./routes/messages');
 const settingsRoutes = require('./routes/settings');
 const { router: authRoutes } = require('./routes/auth');
+const debugRoutes = require('./routes/debug');
 
 const app = express();
 app.use(cors());
@@ -16,6 +17,7 @@ app.use(express.json());
 
 app.use('/voice', voiceRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/debug', debugRoutes);
 app.use('/api/contacts', contactsRoutes);
 app.use('/api/groups', groupsRoutes);
 app.use('/api/messages', messagesRoutes);
