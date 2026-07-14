@@ -54,4 +54,34 @@ router.put('/portal-password', async (req, res) => {
   }
 });
 
+// GET current portal username
+router.get('/portal-username', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT value FROM settings WHERE key = 'portal_username'`);
+    res.json({ username: rows.length ? rows[0].value : 'admin' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch username' });
+  }
+});
+
+// PUT update the web portal login username
+router.put('/portal-username', async (req, res) => {
+  const { username } = req.body;
+  if (!username || username.trim().length < 2) {
+    return res.status(400).json({ error: 'Username must be at least 2 characters' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO settings (key, value) VALUES ('portal_username', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [username.trim()]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update username' });
+  }
+});
+
 module.exports = router;

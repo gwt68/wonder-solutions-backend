@@ -27,15 +27,19 @@ function requireAuth(req, res, next) {
 }
 
 router.post('/login', async (req, res) => {
-  const { password } = req.body;
-  if (!password) return res.status(400).json({ error: 'Password is required' });
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
 
   try {
-    const { rows } = await pool.query(`SELECT value FROM settings WHERE key = 'portal_password'`);
-    const correct = rows.length ? rows[0].value : null;
+    const { rows } = await pool.query(
+      `SELECT key, value FROM settings WHERE key IN ('portal_username', 'portal_password')`
+    );
+    const settingsMap = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    const correctUsername = settingsMap.portal_username || 'admin';
+    const correctPassword = settingsMap.portal_password;
 
-    if (!correct || password !== correct) {
-      return res.status(401).json({ error: 'Incorrect password' });
+    if (!correctPassword || username !== correctUsername || password !== correctPassword) {
+      return res.status(401).json({ error: 'Incorrect username or password' });
     }
 
     res.json({ token: issueToken() });
