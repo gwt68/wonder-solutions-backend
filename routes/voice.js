@@ -80,7 +80,9 @@ router.post('/incoming', async (req, res) => {
 router.post('/handle', async (req, res) => {
   const callSid = req.body.CallSid;
   const digits = req.body.Digits;
-  const recordingUrl = req.body.RecordingUrl;
+  // Twilio's RecordingUrl points to the recording *resource*, not the audio file itself.
+  // Appending .mp3 gives the actual playable media.
+  const recordingUrl = req.body.RecordingUrl ? `${req.body.RecordingUrl}.mp3` : null;
   const session = await getSession(callSid);
   const twiml = new VoiceResponse();
 
