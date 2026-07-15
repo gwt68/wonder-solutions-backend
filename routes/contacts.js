@@ -29,14 +29,17 @@ router.get('/', async (req, res) => {
 
 // POST create a new contact
 router.post('/', async (req, res) => {
-  const { name, phone_number, email, address, preferred_method, notes, group_ids } = req.body;
+  const { name, phone_number, email, address, preferred_method, methods, notes, group_ids } = req.body;
   if (!phone_number) return res.status(400).json({ error: 'phone_number is required' });
+
+  const enabledMethods = Array.isArray(methods) && methods.length ? methods : [preferred_method || 'sms'];
+  const defaultMethod = enabledMethods.includes(preferred_method) ? preferred_method : enabledMethods[0];
 
   try {
     const { rows } = await pool.query(
-      `INSERT INTO contacts (name, phone_number, email, address, preferred_method, notes)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [name || null, phone_number, email || null, address || null, preferred_method || 'sms', notes || null]
+      `INSERT INTO contacts (name, phone_number, email, address, preferred_method, methods, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name || null, phone_number, email || null, address || null, defaultMethod, enabledMethods, notes || null]
     );
     const contact = rows[0];
 
@@ -73,9 +76,10 @@ router.post('/bulk', async (req, res) => {
       continue;
     }
     try {
+      const method = c.preferred_method || 'sms';
       await pool.query(
-        `INSERT INTO contacts (name, phone_number, email, address, preferred_method, notes)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO contacts (name, phone_number, email, address, preferred_method, methods, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (phone_number) DO UPDATE SET
            name = COALESCE(EXCLUDED.name, contacts.name),
            email = COALESCE(EXCLUDED.email, contacts.email),
@@ -86,7 +90,8 @@ router.post('/bulk', async (req, res) => {
           phone,
           c.email || null,
           c.address || null,
-          c.preferred_method || 'sms',
+          method,
+          [method],
           c.notes || null,
         ]
       );
@@ -103,7 +108,13 @@ router.post('/bulk', async (req, res) => {
 // PUT update a contact
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, phone_number, email, address, preferred_method, notes, group_ids } = req.body;
+  const { name, phone_number, email, address, preferred_method, methods, notes, group_ids } = req.body;
+
+  let defaultMethod = preferred_method;
+  let enabledMethods = Array.isArray(methods) && methods.length ? methods : null;
+  if (enabledMethods && defaultMethod && !enabledMethods.includes(defaultMethod)) {
+    defaultMethod = enabledMethods[0];
+  }
 
   try {
     const { rows } = await pool.query(
@@ -113,9 +124,10 @@ router.put('/:id', async (req, res) => {
          email = $3,
          address = $4,
          preferred_method = COALESCE($5, preferred_method),
-         notes = $6
-       WHERE id = $7 RETURNING *`,
-      [name, phone_number, email || null, address || null, preferred_method, notes || null, id]
+         methods = COALESCE($6, methods),
+         notes = $7
+       WHERE id = $8 RETURNING *`,
+      [name, phone_number, email || null, address || null, defaultMethod, enabledMethods, notes || null, id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Contact not found' });
 
