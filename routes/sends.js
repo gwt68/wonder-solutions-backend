@@ -18,6 +18,11 @@ function audioProxyUrl(messageId) {
   return `${base}/api/messages/${messageId}/audio`;
 }
 
+function webhookUrl(path) {
+  const base = (process.env.BASE_URL || '').replace(/\/$/, '');
+  return `${base}/webhooks/${path}`;
+}
+
 // Sends one message to one contact via a specific method.
 // Returns { status: 'sent' | 'failed', twilio_sid, error_message }
 async function sendToContact(contact, message, method) {
@@ -32,7 +37,12 @@ async function sendToContact(contact, message, method) {
       if (!message.text_content) {
         return { status: 'failed', error_message: 'This message has no text to send as an SMS' };
       }
-      const result = await client.messages.create({ to: contact.phone_number, from, body: message.text_content });
+      const result = await client.messages.create({
+        to: contact.phone_number,
+        from,
+        body: message.text_content,
+        statusCallback: webhookUrl('sms-status'),
+      });
       return { status: 'sent', twilio_sid: result.sid };
     }
 
@@ -44,6 +54,7 @@ async function sendToContact(contact, message, method) {
         to: contact.phone_number,
         from,
         mediaUrl: [audioProxyUrl(message.id)],
+        statusCallback: webhookUrl('sms-status'),
       });
       return { status: 'sent', twilio_sid: result.sid };
     }
@@ -58,7 +69,15 @@ async function sendToContact(contact, message, method) {
       } else {
         return { status: 'failed', error_message: 'This message has nothing to play or say on a call' };
       }
-      const result = await client.calls.create({ to: contact.phone_number, from, twiml: twiml.toString() });
+      const result = await client.calls.create({
+        to: contact.phone_number,
+        from,
+        twiml: twiml.toString(),
+        statusCallback: webhookUrl('call-status'),
+        statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+        statusCallbackMethod: 'POST',
+        machineDetection: 'Enable', // lets us tell if a person or voicemail answered
+      });
       return { status: 'sent', twilio_sid: result.sid };
     }
 
@@ -124,23 +143,40 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET send history, joined with contact and message info
+// GET send history, joined with contact and message info.
+// Pass ?contact_id=X to get the full log for one contact (no limit applied).
 router.get('/', async (req, res) => {
+  const { contact_id } = req.query;
   try {
-    const { rows } = await pool.query(`
+    const baseQuery = `
       SELECT s.*, COALESCE(s.method, c.preferred_method) AS effective_method,
              c.name AS contact_name, c.phone_number, c.preferred_method,
              m.title AS message_title, m.type AS message_type
       FROM sends s
       JOIN contacts c ON c.id = s.contact_id
       JOIN messages m ON m.id = s.message_id
-      ORDER BY COALESCE(s.scheduled_at, s.created_at) DESC
-      LIMIT 200
-    `);
+    `;
+    const { rows } = contact_id
+      ? await pool.query(
+          `${baseQuery} WHERE s.contact_id = $1 ORDER BY COALESCE(s.scheduled_at, s.created_at) DESC`,
+          [contact_id]
+        )
+      : await pool.query(`${baseQuery} ORDER BY COALESCE(s.scheduled_at, s.created_at) DESC LIMIT 200`);
     res.json(rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch send history' });
+  }
+});
+
+// DELETE a send record (e.g. clearing out a failed attempt)
+router.delete('/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM sends WHERE id = $1', [req.params.id]);
+    res.status(204).end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete send record' });
   }
 });
 

@@ -106,4 +106,36 @@ router.get('/:id/audio-label', async (req, res) => {
   }
 });
 
+// POST add contacts to a group (used from the group detail view)
+router.post('/:id/contacts', requireAuth, async (req, res) => {
+  const { contact_ids } = req.body;
+  if (!Array.isArray(contact_ids) || !contact_ids.length) {
+    return res.status(400).json({ error: 'contact_ids array is required' });
+  }
+  try {
+    const values = contact_ids.map((cid) => `(${parseInt(cid, 10)}, ${req.params.id})`).join(',');
+    await pool.query(
+      `INSERT INTO contact_groups (contact_id, group_id) VALUES ${values} ON CONFLICT DO NOTHING`
+    );
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to add contacts to group' });
+  }
+});
+
+// DELETE remove a single contact from a group
+router.delete('/:id/contacts/:contactId', requireAuth, async (req, res) => {
+  try {
+    await pool.query(
+      'DELETE FROM contact_groups WHERE group_id = $1 AND contact_id = $2',
+      [req.params.id, req.params.contactId]
+    );
+    res.status(204).end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to remove contact from group' });
+  }
+});
+
 module.exports = router;
