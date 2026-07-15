@@ -18,28 +18,6 @@ function audioProxyUrl(messageId) {
   return `${base}/api/messages/${messageId}/audio`;
 }
 
-// Resolves a target ({type: 'contact'|'group'|'all', id}) into a list of contact rows
-async function resolveRecipients(target) {
-  if (target.type === 'contact') {
-    const { rows } = await pool.query('SELECT * FROM contacts WHERE id = $1', [target.id]);
-    return rows;
-  }
-  if (target.type === 'group') {
-    const { rows } = await pool.query(
-      `SELECT c.* FROM contacts c
-       JOIN contact_groups cg ON cg.contact_id = c.id
-       WHERE cg.group_id = $1`,
-      [target.id]
-    );
-    return rows;
-  }
-  if (target.type === 'all') {
-    const { rows } = await pool.query('SELECT * FROM contacts');
-    return rows;
-  }
-  return [];
-}
-
 // Sends one message to one contact via whichever channel they prefer.
 // Returns { status: 'sent' | 'failed', twilio_sid, error_message }
 async function sendToContact(contact, message) {
@@ -90,24 +68,28 @@ async function sendToContact(contact, message) {
   }
 }
 
-// POST create a send — resolves recipients, then either sends immediately
-// or schedules for later (a background check picks up scheduled sends).
+// POST create a send — takes an explicit list of contact IDs (built by the
+// frontend from individual/group/select-all choices), then either sends
+// immediately or schedules for later (a background check picks up scheduled sends).
 router.post('/', async (req, res) => {
-  const { message_id, target, scheduled_at } = req.body;
-  if (!message_id || !target || !target.type) {
-    return res.status(400).json({ error: 'message_id and target are required' });
+  const { message_id, contact_ids, scheduled_at } = req.body;
+  if (!message_id || !Array.isArray(contact_ids) || !contact_ids.length) {
+    return res.status(400).json({ error: 'message_id and a non-empty contact_ids array are required' });
   }
 
   try {
     const { rows: messageRows } = await pool.query('SELECT * FROM messages WHERE id = $1', [message_id]);
     if (!messageRows.length) return res.status(404).json({ error: 'Message not found' });
     const message = messageRows[0];
-    message.has_uploaded_audio = false;
     const { rows: audioCheck } = await pool.query('SELECT (audio_data IS NOT NULL) AS has FROM messages WHERE id = $1', [message_id]);
     message.has_uploaded_audio = audioCheck[0]?.has || false;
 
-    const recipients = await resolveRecipients(target);
-    if (!recipients.length) return res.status(400).json({ error: 'No contacts matched that target' });
+    const uniqueIds = [...new Set(contact_ids)];
+    const { rows: recipients } = await pool.query(
+      `SELECT * FROM contacts WHERE id = ANY($1::int[])`,
+      [uniqueIds]
+    );
+    if (!recipients.length) return res.status(400).json({ error: 'No matching contacts found' });
 
     const isScheduled = !!scheduled_at && new Date(scheduled_at) > new Date();
     const created = [];

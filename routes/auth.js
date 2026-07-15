@@ -49,4 +49,44 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Recovers a forgotten username/password using a separate recovery key
+// (set in advance from Settings). Deliberately not behind requireAuth,
+// since the whole point is to regain access without being logged in.
+router.post('/recover', async (req, res) => {
+  const { recovery_key, new_username, new_password } = req.body;
+  if (!recovery_key || !new_username || !new_password) {
+    return res.status(400).json({ error: 'Recovery key, new username, and new password are all required' });
+  }
+  if (new_username.trim().length < 2) return res.status(400).json({ error: 'Username must be at least 2 characters' });
+  if (new_password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
+
+  try {
+    const { rows } = await pool.query(`SELECT value FROM settings WHERE key = 'recovery_key'`);
+    const correctKey = rows.length ? rows[0].value : null;
+
+    if (!correctKey) {
+      return res.status(400).json({ error: 'No recovery key has been set up yet. Set one from Settings while logged in.' });
+    }
+    if (recovery_key !== correctKey) {
+      return res.status(401).json({ error: 'Incorrect recovery key' });
+    }
+
+    await pool.query(
+      `INSERT INTO settings (key, value) VALUES ('portal_username', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [new_username.trim()]
+    );
+    await pool.query(
+      `INSERT INTO settings (key, value) VALUES ('portal_password', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [new_password]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Recovery failed' });
+  }
+});
+
 module.exports = { router, requireAuth };

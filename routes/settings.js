@@ -84,4 +84,23 @@ router.put('/portal-username', async (req, res) => {
   }
 });
 
+// PUT set/update the account recovery key (used for "forgot username/password")
+router.put('/recovery-key', async (req, res) => {
+  const { recovery_key } = req.body;
+  if (!recovery_key || recovery_key.length < 4) {
+    return res.status(400).json({ error: 'Recovery key must be at least 4 characters' });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO settings (key, value) VALUES ('recovery_key', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [recovery_key]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update recovery key' });
+  }
+});
+
 module.exports = router;
