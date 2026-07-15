@@ -18,9 +18,9 @@ function audioProxyUrl(messageId) {
   return `${base}/api/messages/${messageId}/audio`;
 }
 
-// Sends one message to one contact via whichever channel they prefer.
+// Sends one message to one contact via a specific method.
 // Returns { status: 'sent' | 'failed', twilio_sid, error_message }
-async function sendToContact(contact, message) {
+async function sendToContact(contact, message, method) {
   const client = twilioClient();
   const from = (process.env.TWILIO_PHONE_NUMBER || '').trim();
   if (!from) return { status: 'failed', error_message: 'TWILIO_PHONE_NUMBER is not configured' };
@@ -28,7 +28,7 @@ async function sendToContact(contact, message) {
   const hasAudio = !!(message.audio_url || message.has_uploaded_audio);
 
   try {
-    if (contact.preferred_method === 'sms') {
+    if (method === 'sms') {
       if (!message.text_content) {
         return { status: 'failed', error_message: 'This message has no text to send as an SMS' };
       }
@@ -36,7 +36,7 @@ async function sendToContact(contact, message) {
       return { status: 'sent', twilio_sid: result.sid };
     }
 
-    if (contact.preferred_method === 'voice_note') {
+    if (method === 'voice_note') {
       if (!hasAudio) {
         return { status: 'failed', error_message: 'This message has no audio to send as a voice note' };
       }
@@ -48,7 +48,7 @@ async function sendToContact(contact, message) {
       return { status: 'sent', twilio_sid: result.sid };
     }
 
-    if (contact.preferred_method === 'call') {
+    if (method === 'call') {
       const VoiceResponse = twilio.twiml.VoiceResponse;
       const twiml = new VoiceResponse();
       if (hasAudio) {
@@ -62,19 +62,19 @@ async function sendToContact(contact, message) {
       return { status: 'sent', twilio_sid: result.sid };
     }
 
-    return { status: 'failed', error_message: `Unknown preferred method: ${contact.preferred_method}` };
+    return { status: 'failed', error_message: `Unknown method: ${method}` };
   } catch (err) {
     return { status: 'failed', error_message: err.message };
   }
 }
 
-// POST create a send — takes an explicit list of contact IDs (built by the
-// frontend from individual/group/select-all choices), then either sends
-// immediately or schedules for later (a background check picks up scheduled sends).
+// POST create a send — takes an explicit list of { contact_id, method } (built
+// by the frontend, letting each recipient use a specific method rather than
+// always their default), then either sends immediately or schedules for later.
 router.post('/', async (req, res) => {
-  const { message_id, contact_ids, scheduled_at } = req.body;
-  if (!message_id || !Array.isArray(contact_ids) || !contact_ids.length) {
-    return res.status(400).json({ error: 'message_id and a non-empty contact_ids array are required' });
+  const { message_id, recipients, scheduled_at } = req.body;
+  if (!message_id || !Array.isArray(recipients) || !recipients.length) {
+    return res.status(400).json({ error: 'message_id and a non-empty recipients array are required' });
   }
 
   try {
@@ -84,30 +84,34 @@ router.post('/', async (req, res) => {
     const { rows: audioCheck } = await pool.query('SELECT (audio_data IS NOT NULL) AS has FROM messages WHERE id = $1', [message_id]);
     message.has_uploaded_audio = audioCheck[0]?.has || false;
 
-    const uniqueIds = [...new Set(contact_ids)];
-    const { rows: recipients } = await pool.query(
-      `SELECT * FROM contacts WHERE id = ANY($1::int[])`,
-      [uniqueIds]
-    );
-    if (!recipients.length) return res.status(400).json({ error: 'No matching contacts found' });
+    const contactIds = [...new Set(recipients.map((r) => r.contact_id))];
+    const { rows: contactRows } = await pool.query('SELECT * FROM contacts WHERE id = ANY($1::int[])', [contactIds]);
+    const contactsById = Object.fromEntries(contactRows.map((c) => [c.id, c]));
+    if (!contactRows.length) return res.status(400).json({ error: 'No matching contacts found' });
 
     const isScheduled = !!scheduled_at && new Date(scheduled_at) > new Date();
     const created = [];
 
-    for (const contact of recipients) {
+    for (const recipient of recipients) {
+      const contact = contactsById[recipient.contact_id];
+      if (!contact) continue;
+      // Trust the requested method only if it's actually enabled for this contact; otherwise fall back safely.
+      const enabledMethods = contact.methods && contact.methods.length ? contact.methods : [contact.preferred_method];
+      const method = enabledMethods.includes(recipient.method) ? recipient.method : contact.preferred_method;
+
       if (isScheduled) {
         const { rows } = await pool.query(
-          `INSERT INTO sends (contact_id, message_id, status, scheduled_at)
-           VALUES ($1, $2, 'scheduled', $3) RETURNING *`,
-          [contact.id, message_id, scheduled_at]
+          `INSERT INTO sends (contact_id, message_id, status, scheduled_at, method)
+           VALUES ($1, $2, 'scheduled', $3, $4) RETURNING *`,
+          [contact.id, message_id, scheduled_at, method]
         );
         created.push(rows[0]);
       } else {
-        const result = await sendToContact(contact, message);
+        const result = await sendToContact(contact, message, method);
         const { rows } = await pool.query(
-          `INSERT INTO sends (contact_id, message_id, status, twilio_sid, error_message, sent_at)
-           VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING *`,
-          [contact.id, message_id, result.status, result.twilio_sid || null, result.error_message || null]
+          `INSERT INTO sends (contact_id, message_id, status, twilio_sid, error_message, sent_at, method)
+           VALUES ($1, $2, $3, $4, $5, NOW(), $6) RETURNING *`,
+          [contact.id, message_id, result.status, result.twilio_sid || null, result.error_message || null, method]
         );
         created.push(rows[0]);
       }
@@ -124,7 +128,8 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(`
-      SELECT s.*, c.name AS contact_name, c.phone_number, c.preferred_method,
+      SELECT s.*, COALESCE(s.method, c.preferred_method) AS effective_method,
+             c.name AS contact_name, c.phone_number, c.preferred_method,
              m.title AS message_title, m.type AS message_type
       FROM sends s
       JOIN contacts c ON c.id = s.contact_id
@@ -153,10 +158,11 @@ async function processDueSends() {
 
     for (const row of due) {
       const contact = { id: row.c_id, name: row.c_name, phone_number: row.phone_number, preferred_method: row.preferred_method };
+      const method = row.method || row.preferred_method;
       const { rows: audioCheck } = await pool.query('SELECT (audio_data IS NOT NULL) AS has FROM messages WHERE id = $1', [row.m_id]);
       const message = { id: row.m_id, text_content: row.text_content, audio_url: row.audio_url, has_uploaded_audio: audioCheck[0]?.has || false };
 
-      const result = await sendToContact(contact, message);
+      const result = await sendToContact(contact, message, method);
       await pool.query(
         `UPDATE sends SET status = $1, twilio_sid = $2, error_message = $3, sent_at = NOW() WHERE id = $4`,
         [result.status, result.twilio_sid || null, result.error_message || null, row.id]
