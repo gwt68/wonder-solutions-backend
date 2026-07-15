@@ -103,4 +103,9 @@ router.put('/recovery-key', async (req, res) => {
   }
 });
 
+// GET the configured Twilio sending number (read-only, for display)
+router.get('/twilio-number', async (req, res) => {
+  res.json({ number: (process.env.TWILIO_PHONE_NUMBER || '').trim() || null });
+});
+
 module.exports = router;

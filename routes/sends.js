@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const twilio = require('twilio');
 const pool = require('../db/pool');
@@ -109,6 +110,7 @@ router.post('/', async (req, res) => {
     if (!contactRows.length) return res.status(400).json({ error: 'No matching contacts found' });
 
     const isScheduled = !!scheduled_at && new Date(scheduled_at) > new Date();
+    const batchId = crypto.randomUUID();
     const created = [];
 
     for (const recipient of recipients) {
@@ -120,23 +122,23 @@ router.post('/', async (req, res) => {
 
       if (isScheduled) {
         const { rows } = await pool.query(
-          `INSERT INTO sends (contact_id, message_id, status, scheduled_at, method)
-           VALUES ($1, $2, 'scheduled', $3, $4) RETURNING *`,
-          [contact.id, message_id, scheduled_at, method]
+          `INSERT INTO sends (contact_id, message_id, status, scheduled_at, method, batch_id)
+           VALUES ($1, $2, 'scheduled', $3, $4, $5) RETURNING *`,
+          [contact.id, message_id, scheduled_at, method, batchId]
         );
         created.push(rows[0]);
       } else {
         const result = await sendToContact(contact, message, method);
         const { rows } = await pool.query(
-          `INSERT INTO sends (contact_id, message_id, status, twilio_sid, error_message, sent_at, method)
-           VALUES ($1, $2, $3, $4, $5, NOW(), $6) RETURNING *`,
-          [contact.id, message_id, result.status, result.twilio_sid || null, result.error_message || null, method]
+          `INSERT INTO sends (contact_id, message_id, status, twilio_sid, error_message, sent_at, method, batch_id)
+           VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7) RETURNING *`,
+          [contact.id, message_id, result.status, result.twilio_sid || null, result.error_message || null, method, batchId]
         );
         created.push(rows[0]);
       }
     }
 
-    res.status(201).json({ count: created.length, scheduled: isScheduled, sends: created });
+    res.status(201).json({ count: created.length, scheduled: isScheduled, batch_id: batchId, sends: created });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || 'Failed to create send' });
@@ -151,7 +153,9 @@ router.get('/', async (req, res) => {
     const baseQuery = `
       SELECT s.*, COALESCE(s.method, c.preferred_method) AS effective_method,
              c.name AS contact_name, c.phone_number, c.preferred_method,
-             m.title AS message_title, m.type AS message_type
+             m.title AS message_title, m.type AS message_type,
+             m.text_content AS message_text, m.audio_url AS message_audio_url,
+             (m.audio_data IS NOT NULL) AS message_has_uploaded_audio
       FROM sends s
       JOIN contacts c ON c.id = s.contact_id
       JOIN messages m ON m.id = s.message_id
@@ -161,7 +165,7 @@ router.get('/', async (req, res) => {
           `${baseQuery} WHERE s.contact_id = $1 ORDER BY COALESCE(s.scheduled_at, s.created_at) DESC`,
           [contact_id]
         )
-      : await pool.query(`${baseQuery} ORDER BY COALESCE(s.scheduled_at, s.created_at) DESC LIMIT 200`);
+      : await pool.query(`${baseQuery} ORDER BY COALESCE(s.scheduled_at, s.created_at) DESC LIMIT 500`);
     res.json(rows);
   } catch (err) {
     console.error(err);
